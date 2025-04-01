@@ -1,0 +1,13 @@
+using System.Configuration;
+using System.Data;
+using System.Windows;
+
+
+namespace MyLab_V2_WPF
+{
+    public partial class App : Application
+    {
+        public string GitHubUsername => Settings.Default.GitHubUsername;
+        public string PersonalAccessToken => Settings.Default.PersonalAccessToken;
+    }
+}

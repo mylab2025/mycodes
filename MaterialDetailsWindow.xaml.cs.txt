@@ -1,0 +1,267 @@
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media.Animation;
+using MyLab_V2_WPF;
+using LiveCharts;
+using LiveCharts.Wpf;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+
+
+namespace MyLab_V2_WPF
+{
+    public partial class MainWindow : Window
+    {
+        public MainWindow()
+        {
+            InitializeComponent();
+            ShowDashboard();
+            LoadStoredCredentials();
+            LoadDashboardData();
+            LoadInventoryGrowthChart();
+        
+
+        }
+
+        public class DashboardViewModel
+        {
+            public ChartValues<int> InventoryData { get; set; }
+            public List<string> TimeLabels { get; set; }
+
+            public DashboardViewModel()
+            {
+                InventoryData = new ChartValues<int>();
+                TimeLabels = new List<string>();
+            }
+        }
+
+        public async Task LoadInventoryGrowthChart()
+        {
+            chart1.Visibility = Visibility.Visible;
+            string githubUsername = Settings.Default.GitHubUsername;
+            string personalAccessToken = Settings.Default.PersonalAccessToken;
+            string apiUrl = $"https://api.github.com/users/{githubUsername}/repos";
+
+            try
+            {
+                using (HttpClient client = new HttpClient())
+                {
+                    client.DefaultRequestHeaders.Add("User-Agent", "MyLabApp");
+                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {personalAccessToken}");
+
+                    string reposJson = await client.GetStringAsync(apiUrl);
+                    JsonDocument reposDoc = JsonDocument.Parse(reposJson);
+
+                    Dictionary<string, int> materialsByMonth = new Dictionary<string, int>();
+
+                    foreach (var repo in reposDoc.RootElement.EnumerateArray())
+                    {
+                        if (repo.TryGetProperty("created_at", out JsonElement createdAtElement))
+                        {
+                            DateTime createdAt = DateTime.Parse(createdAtElement.GetString());
+                            string month = createdAt.ToString("yyyy-MM-dd");
+
+                            if (!materialsByMonth.ContainsKey(month))
+                                materialsByMonth[month] = 0;
+
+                            materialsByMonth[month]++;
+                        }
+                    }
+
+                    var sortedData = materialsByMonth.OrderBy(k => k.Key);
+                    var viewModel = new DashboardViewModel();
+
+                    foreach (var entry in sortedData)
+                    {
+                        viewModel.TimeLabels.Add(entry.Key);
+                        viewModel.InventoryData.Add(entry.Value);
+                    }
+
+                    Dispatcher.Invoke(() =>
+                    {
+                        InventoryChart.DataContext = viewModel;
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading chart: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+
+        private void SaveCredentialsButton_Click(object sender, RoutedEventArgs e)
+        {
+            Settings.Default.GitHubUsername = GitHubUsernameTextBox.Text;
+            Settings.Default.PersonalAccessToken = PersonalAccessTokenTextBox.Password;
+            Settings.Default.Save();
+            LoadDashboardData();
+            LoadInventoryGrowthChart();
+            MessageBox.Show("GitHub credentials saved successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+
+        }
+
+        private void LoadStoredCredentials()
+        {
+            GitHubUsernameTextBox.Text = Settings.Default.GitHubUsername;
+            PersonalAccessTokenTextBox.Password = Settings.Default.PersonalAccessToken; // Fix for PasswordBox
+        }
+
+        public async Task LoadDashboardData()
+        {
+           
+            string githubUsername = Settings.Default.GitHubUsername;
+            string personalAccessToken = Settings.Default.PersonalAccessToken;
+            string apiUrl = $"https://api.github.com/users/{githubUsername}/repos";
+
+            int totalMaterials = 0;
+            int lowStockCount = 0;
+            List<string> lowStockMaterials = new List<string>();
+
+            try
+            {
+                using (HttpClient client = new HttpClient())
+                {
+                    client.DefaultRequestHeaders.Add("User-Agent", "MyLabApp");
+                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {personalAccessToken}");
+
+                    string reposJson = await client.GetStringAsync(apiUrl);
+                    JsonDocument reposDoc = JsonDocument.Parse(reposJson);
+                    List<string> repoNames = new List<string>();
+
+                    foreach (var repo in reposDoc.RootElement.EnumerateArray())
+                    {
+                        if (repo.TryGetProperty("name", out JsonElement repoNameElement))
+                        {
+                            repoNames.Add(repoNameElement.GetString());
+                        }
+                    }
+
+                    totalMaterials = repoNames.Count;
+
+                    foreach (string repoName in repoNames)
+                    {
+                        string jsonUrl = $"https://raw.githubusercontent.com/{githubUsername}/{repoName}/main/db.json";
+
+                        try
+                        {
+                            string jsonData = await client.GetStringAsync(jsonUrl);
+                            JsonDocument doc = JsonDocument.Parse(jsonData);
+                            var material = doc.RootElement.GetProperty("inventory")[0];
+
+                            if (material.TryGetProperty("MQNT", out JsonElement quantityElement))
+                            {
+                                int quantity = quantityElement.GetInt32();
+                                if (quantity < 10)
+                                {
+                                    lowStockCount++;
+                                    lowStockMaterials.Add(repoName);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Skipping {repoName}: {ex.Message}");
+                        }
+                    }
+
+                    Dispatcher.Invoke(() =>
+                    {
+                        TotalMaterialsTextBlock.Text = totalMaterials.ToString();
+                        LowStockTextBlock.Text = lowStockCount.ToString();
+                        LowStockList.ItemsSource = lowStockMaterials;
+                        AnimateDashboard();
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading data: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void RefreshButton_Click(object sender, RoutedEventArgs e)
+        {
+            LoadDashboardData();
+        }
+
+        private void AnimateDashboard()
+        {
+            DoubleAnimation fadeAnimation = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.5));
+            DashboardGrid.BeginAnimation(UIElement.OpacityProperty, fadeAnimation);
+        }
+
+        private void LowStockList_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (LowStockList.SelectedItem != null)
+            {
+                string selectedMaterial = LowStockList.SelectedItem.ToString();
+                Clipboard.SetText(selectedMaterial);
+                MessageBox.Show($"Copied to clipboard: {selectedMaterial}", "Copied", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+
+
+        private void ShowDashboard()
+        {
+            MainGrid.Visibility = Visibility.Visible;
+            ContentFrame.Visibility = Visibility.Collapsed;
+            ContentFrame.Content = null;
+            LoadDashboardData();
+            LoadInventoryGrowthChart();
+
+        }
+
+        private void btnDashboard_Click(object sender, RoutedEventArgs e)
+        {
+            ShowDashboard();
+        }
+
+        private void btnSearch_Click(object sender, RoutedEventArgs e)
+        {
+            MainGrid.Visibility = Visibility.Collapsed;
+            ContentFrame.Visibility = Visibility.Visible;
+            ContentFrame.Navigate(new SearchPage());
+        }
+
+        private void btnAddMaterial_Click(object sender, RoutedEventArgs e)
+        {
+            MainGrid.Visibility = Visibility.Collapsed;
+            ContentFrame.Visibility = Visibility.Visible;
+            ContentFrame.Navigate(new AddMaterialPage());
+        }
+
+        private void btnEditMaterial_Click(object sender, RoutedEventArgs e)
+        {
+            MainGrid.Visibility = Visibility.Collapsed;
+            ContentFrame.Visibility = Visibility.Visible;
+            ContentFrame.Navigate(new EditMaterialPage());
+        }
+
+        private void btnDeleteMaterial_Click(object sender, RoutedEventArgs e)
+        {
+            MainGrid.Visibility = Visibility.Collapsed;
+            ContentFrame.Visibility = Visibility.Visible;
+            ContentFrame.Navigate(new DeleteMaterialPage());
+        }
+
+        private void btnAbout_Click(object sender, RoutedEventArgs e)
+        {
+            AboutDialog aboutDialog = new AboutDialog();
+            aboutDialog.ShowDialog();
+        }
+
+
+    }
+}

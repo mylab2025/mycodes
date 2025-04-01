@@ -1,0 +1,327 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+
+namespace MyLab_V2_WPF
+{
+    public partial class SearchPage : Page
+    {
+
+        private string GitHubUsername => (Application.Current as App)?.GitHubUsername ?? "";
+        
+
+        private List<string> searchHistory = new List<string>();
+        private const int MaxHistory = 10;
+
+        public SearchPage()
+        {
+            InitializeComponent();
+           
+        }  
+
+
+
+        private void txtSearch_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            // Hide placeholder if there's text in the search box, otherwise show it
+            txtPlaceholder.Visibility = string.IsNullOrWhiteSpace(txtSearch.Text) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+
+        private void OpenMaterialDescription(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is TextBlock textBlock && textBlock.Tag is string url)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+            }
+        }
+
+        private void OpenMaterialDatasheet(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is TextBlock textBlock && textBlock.Tag is string url)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+            }
+        }
+
+        private void ShowMaterialDetails(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is Border border && border.DataContext is Material selectedMaterial)
+            {
+                Console.WriteLine("Datasheet URL: " + selectedMaterial.MDS); 
+
+                MaterialDetailsWindow detailsWindow = new MaterialDetailsWindow
+                {
+                    DataContext = selectedMaterial,
+                    DatasheetUrl = selectedMaterial.MDS,
+                    ReferenceUrl = selectedMaterial.MR,
+                    MATQNT = selectedMaterial.MQNT,
+                    ImageUrls = new List<string>(selectedMaterial.MaterialImages)
+                };
+                detailsWindow.ShowDialog();
+            }
+        }
+
+        private void txtSearch_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                btnSearchMaterial_Click(sender, new RoutedEventArgs()); // Trigger search
+            }
+        }
+
+
+        private async void btnSearchMaterial_Click(object sender, RoutedEventArgs e)
+        {
+            string searchText = txtSearch.Text.Trim();
+            string searchType = (cmbSearchType.SelectedItem as ComboBoxItem)?.Content.ToString();
+
+            if (string.IsNullOrEmpty(searchText))
+            {
+                MessageBox.Show("Please enter a keyword to search.", "Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            AddToSearchHistory(searchText);
+            historyPanel.Visibility = Visibility.Collapsed;
+            btnToggleHistory.Content = "Show History";
+
+            // 🔹 Show loading panel
+            loadingPanel.Visibility = Visibility.Visible;
+            lstResults.Visibility = Visibility.Collapsed;
+
+            // 🔹 Allow UI to update before heavy work starts
+            await Task.Delay(100);
+
+            List<Material> allMatchingMaterials = new List<Material>();
+            using HttpClient client = new HttpClient();
+
+            try
+            {
+                // 🔹 Show repo names in a new UI section
+                txtCurrentRepo.Text = "Fetching data...";
+
+                List<string> jsonUrls = GenerateJsonUrls(20250, 20400); // Increased range to 1000
+
+                var fetchTasks = jsonUrls.Select(async (url, index) =>
+                {
+                    string repoName = url.Split('/').Reverse().Skip(2).First(); // Extracts "MID20300"
+                    await Dispatcher.InvokeAsync(() => txtCurrentRepo.Text = $"Searching in: {repoName}", System.Windows.Threading.DispatcherPriority.Background);
+                    return await FetchMaterialsAsync(client, url);
+                });
+
+                var allResults = await Task.WhenAll(fetchTasks);
+
+                foreach (var materials in allResults.Where(m => m != null))
+                {
+                    var matchedMaterials = materials.Where(m =>
+                        (searchType == "Material ID" && m.MID.Contains(searchText, StringComparison.OrdinalIgnoreCase)) ||
+                        (searchType == "Material Description" && m.MD.Contains(searchText, StringComparison.OrdinalIgnoreCase)) ||
+                        (searchType == "Material Location" && m.ML.Contains(searchText, StringComparison.OrdinalIgnoreCase)) ||
+                        (searchType == "MaterialTitle" &&
+                            (m.MaterialTitle.Name.Contains(searchText, StringComparison.OrdinalIgnoreCase) ||
+                             m.MaterialTitle.PN.Contains(searchText, StringComparison.OrdinalIgnoreCase) ||
+                             m.MaterialTitle.MF.Contains(searchText, StringComparison.OrdinalIgnoreCase))))
+                    .ToList();
+
+                    if (matchedMaterials.Any())
+                    {
+                        allMatchingMaterials.AddRange(matchedMaterials);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error fetching data: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+            // 🔹 Hide loading panel
+            loadingPanel.Visibility = Visibility.Collapsed;
+            txtCurrentRepo.Text = "Search complete.";
+
+            if (allMatchingMaterials.Count > 0)
+            {
+                lstResults.Visibility = Visibility.Visible;
+                lstResults.ItemsSource = allMatchingMaterials;
+            }
+            else
+            {
+                lstResults.Visibility = Visibility.Collapsed;
+                MessageBox.Show("No material found.", "No Results", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+
+        private List<string> GenerateJsonUrls(int start, int end)
+        {
+            return Enumerable.Range(start, end - start + 1)
+                .Select(i => $"https://raw.githubusercontent.com/{GitHubUsername}/MID{i:D5}/main/db.json")  //***OLD URL*"https://my-json-server.typicode.com/{GitHubUsername}//MID{i:D5}/db"
+                .ToList();
+        }
+
+
+
+        // **Helper function to fetch materials asynchronously**
+        private async Task<List<Material>> FetchMaterialsAsync(HttpClient client, string url)
+        {
+            try
+            {
+                HttpResponseMessage response = await client.GetAsync(url);
+                if (!response.IsSuccessStatusCode) return null; // Skip if error
+
+                string jsonString = await response.Content.ReadAsStringAsync();
+                var inventoryData = JsonSerializer.Deserialize<InventoryData>(jsonString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                return inventoryData?.Inventory ?? new List<Material>();
+            }
+            catch
+            {
+                return null; // Ignore errors & continue
+            }
+        }
+
+
+
+
+        private void AddToSearchHistory(string searchText)
+        {
+            if (!searchHistory.Contains(searchText))
+            {
+                if (searchHistory.Count >= MaxHistory)
+                {
+                    searchHistory.RemoveAt(0);
+                }
+
+                searchHistory.Add(searchText);
+                UpdateSearchHistoryUI();
+            }
+        }
+
+        private void btnToggleHistory_Click(object sender, RoutedEventArgs e)
+        {
+            if (searchHistory.Count == 0)
+            {
+                MessageBox.Show("Search history is empty.", "No History", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            if (historyPanel.Visibility == Visibility.Visible)
+            {
+                historyPanel.Visibility = Visibility.Collapsed;
+                btnToggleHistory.Content = "Show History"; 
+            }
+            else
+            {
+                    historyPanel.Visibility = Visibility.Visible;
+                    btnToggleHistory.Content = "Hide History";
+               
+            }
+        }
+
+        // 🔹 Hover effect to highlight history items
+        private void OnHistoryItemHover(object sender, MouseEventArgs e)
+        {
+            if (sender is Border border)
+            {
+                border.Background = new SolidColorBrush(Color.FromRgb(230, 230, 230)); // Light gray
+                border.BorderBrush = new SolidColorBrush(Color.FromRgb(180, 180, 180)); // Gray border
+            }
+        }
+
+        private void OnHistoryItemLeave(object sender, MouseEventArgs e)
+        {
+            if (sender is Border border)
+            {
+                border.Background = Brushes.Transparent;
+                border.BorderBrush = Brushes.Transparent;
+            }
+        }
+
+        // 🔹 Click event to fill search box when a history item is clicked
+        private void OnHistoryItemClick(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is TextBlock textBlock)
+            {
+                txtSearch.Text = textBlock.Text;
+            }
+        }
+
+
+        private void OpenMaterialImage(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is Image image && image.Source is BitmapImage bitmapImage)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = bitmapImage.UriSource.ToString(),
+                    UseShellExecute = true
+                });
+            }
+
+        }
+
+
+        private void UpdateSearchHistoryUI()
+        {
+            lstSearchHistory.ItemsSource = null;
+            lstSearchHistory.ItemsSource = searchHistory;
+            historyPanel.Visibility = searchHistory.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void lstSearchHistory_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (lstSearchHistory.SelectedItem != null)
+            {
+                txtSearch.Text = lstSearchHistory.SelectedItem.ToString();
+                lstSearchHistory.SelectedItem = null; // Clear selection after clicking
+            }
+        }
+
+
+
+    }
+
+    public class InventoryData
+    {
+        public List<Material> Inventory { get; set; } = new List<Material>();
+    }
+
+    public class Material
+    {
+        public MaterialTitle MaterialTitle { get; set; } = new MaterialTitle();
+        public string MID { get; set; } = string.Empty;
+        public string MD { get; set; } = string.Empty;
+        public string MT { get; set; } = string.Empty;
+        public string MQATG { get; set; } = string.Empty;
+        public int? MQNT { get; set; } 
+        public string ML { get; set; } = string.Empty;
+        public string MDS { get; set; } = string.Empty;
+        public string MR { get; set; } = string.Empty;
+        public List<string> MaterialImages { get; set; } = new List<string>();
+    }
+
+    public class MaterialTitle
+    {
+        public string Name { get; set; } = string.Empty;
+        public string PN { get; set; } = string.Empty;
+        public string MF { get; set; } = string.Empty;
+    }
+
+
+}

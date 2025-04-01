@@ -1,0 +1,115 @@
+using System;
+using System.Net.Http;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+
+namespace MyLab_V2_WPF
+{
+    public partial class DeleteMaterialPage : Page
+    {
+        private string GitHubUsername => (Application.Current as App)?.GitHubUsername ?? "";
+        private string PersonalAccessToken => (Application.Current as App)?.PersonalAccessToken ?? "";
+
+        public DeleteMaterialPage()
+        {
+            InitializeComponent();
+        }
+
+        private async void DeleteMaterialButton_Click(object sender, RoutedEventArgs e)
+        {
+
+            string repoName = RepoNameTextBox.Text;
+            if (string.IsNullOrEmpty(repoName))
+            {
+                MessageBox.Show("Please enter a valid Material ID (repo name).", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirmResult = MessageBox.Show($"Are you sure you want to delete '{repoName}'? This action cannot be undone!", "Confirm Delete", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirmResult != MessageBoxResult.Yes) return; 
+            LoadingOverlay.Visibility = Visibility.Visible;
+            status1.Text = "Removing....";
+
+            try
+            {
+                await DeleteRepository(repoName);
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+                MessageBox.Show("Material deleted successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+                MessageBox.Show($"Error deleting material: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async void BulkDeleteButton_Click(object sender, RoutedEventArgs e)
+        {
+            string fromRepo = RepoFromTextBox.Text;
+            string toRepo = RepoToTextBox.Text;
+
+            if (string.IsNullOrEmpty(fromRepo) || string.IsNullOrEmpty(toRepo))
+            {
+                MessageBox.Show("Please enter a valid range (From - To).", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (!int.TryParse(fromRepo.Substring(3), out int startId) || !int.TryParse(toRepo.Substring(3), out int endId))
+            {
+                MessageBox.Show("Invalid range format. Use MID00001 format.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (startId > endId)
+            {
+                MessageBox.Show("Start ID must be less than End ID.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirmResult = MessageBox.Show($"Are you sure you want to delete repositories from '{fromRepo}' to '{toRepo}'? This action cannot be undone!", "Confirm Bulk Delete", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirmResult != MessageBoxResult.Yes) return;
+
+            try
+            {
+                LoadingOverlay.Visibility = Visibility.Visible;
+                for (int i = startId; i <= endId; i++)
+                {
+                    string repoName = $"MID{i:D5}";
+                    await DeleteRepository(repoName);
+                    status1.Text = "Removing...MID" + i;
+                }
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+                MessageBox.Show("Bulk deletion completed successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+                MessageBox.Show($"Error during bulk deletion: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async Task DeleteRepository(string repoName)
+        {
+            using (HttpClient client = new HttpClient())
+            {
+                
+                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {PersonalAccessToken}");
+                client.DefaultRequestHeaders.Add("User-Agent", "RepoManagerApp");
+
+                string repoApiUrl = $"https://api.github.com/repos/{GitHubUsername}/{repoName}";
+                Console.WriteLine($"Deleting repository: {repoApiUrl}");
+                
+                var response = await client.DeleteAsync(repoApiUrl);
+                string responseBody = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"API Response: {responseBody}");
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    LoadingOverlay.Visibility = Visibility.Collapsed;
+                    throw new Exception($"Failed to delete repository: {responseBody}");
+                }
+            }
+        }
+    }
+}

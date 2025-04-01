@@ -1,0 +1,315 @@
+using System;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using Newtonsoft.Json.Linq;
+using MyLab_V2_WPF;
+using Microsoft.Win32;
+using System.Globalization;
+using System.Windows.Data;
+using Newtonsoft.Json;
+using System.Net.Http.Headers;
+using System.IO;
+
+
+namespace MyLab_V2_WPF
+{
+   
+    public partial class EditMaterialPage : Page
+    {
+        private string GitHubUsername => (Application.Current as App)?.GitHubUsername ?? "";
+        private string PersonalAccessToken => (Application.Current as App)?.PersonalAccessToken ?? "";
+        private readonly HttpClient _httpClient = new HttpClient();
+
+        public EditMaterialPage()
+        {
+            InitializeComponent();
+        }
+
+
+        private void BrowseRef_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Title = "Select a Reference File",
+                Filter = "PDF Files (*.pdf)|*.pdf",
+                DefaultExt = ".pdf"
+            };
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                Refpath.Text = openFileDialog.FileName; // Set selected path in TextBox
+            }
+        }
+
+
+        private void BrowseDS_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Title = "Select a Datasheet File",
+                Filter = "PDF Files (*.pdf)|*.pdf",
+                DefaultExt = ".pdf"
+            };
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                Datasheetpath.Text = openFileDialog.FileName; // Set selected path in TextBox
+            }
+        }
+
+
+        private void BrowseImg_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Title = "Select a Material Image",
+                Filter = "Image Files (*.jpg;*.jpeg;*.png;*.bmp;*.gif)|*.jpg;*.jpeg;*.png;*.bmp;*.gif",
+                DefaultExt = ".jpg"
+            };
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                Imagepath.Text = openFileDialog.FileName; // Set selected path in TextBox
+            }
+        }
+
+        private void BrowseImg2_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Title = "Select a Material Image",
+                Filter = "Image Files (*.jpg;*.jpeg;*.png;*.bmp;*.gif)|*.jpg;*.jpeg;*.png;*.bmp;*.gif",
+                DefaultExt = ".jpg"
+            };
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                Image2path.Text = openFileDialog.FileName; // Set selected path in TextBox
+            }
+        }
+
+
+
+
+
+
+
+
+        private async void FetchDataButton_Click(object sender, RoutedEventArgs e)
+        {
+            string repoName = MIDTextBox.Text;
+            if (string.IsNullOrEmpty(repoName))
+            {
+                MessageBox.Show("Please enter a valid Material ID.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var jsonData = await FetchJsonFromRepo(repoName);
+                PopulateFields(jsonData);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error fetching material data: {ex.Message}");
+            }
+        }
+
+
+
+
+        private async Task<string> UploadFileToGitHub(string repoName, string filePath)
+        {
+            string fileName = Path.GetFileName(filePath);
+            string url = $"https://api.github.com/repos/{GitHubUsername}/{repoName}/contents/{fileName}";
+
+            byte[] fileBytes = File.ReadAllBytes(filePath);
+            string base64Content = Convert.ToBase64String(fileBytes);
+
+            var requestBody = new
+            {
+                message = $"Added {fileName}",
+                content = base64Content
+            };
+
+            var request = new HttpRequestMessage(HttpMethod.Put, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("token", PersonalAccessToken);
+            request.Headers.Add("User-Agent", "MyLabApp");
+            request.Content = new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json");
+
+
+            HttpResponseMessage response = await _httpClient.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                return $"https://raw.githubusercontent.com/{GitHubUsername}/{repoName}/main/{fileName}";
+            }
+            return string.Empty;
+        }
+
+
+
+
+
+
+        private async void SaveUpdatesButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                LoadingOverlay.Visibility = Visibility.Visible;
+                string repoName = MIDTextBox.Text;
+                status1.Text = "Started Uploading Files...";
+
+
+                if (!string.IsNullOrEmpty(Datasheetpath.Text))
+                {
+                    string pdfUrl = await UploadFileToGitHub(repoName, Datasheetpath.Text);
+                    DatasheetLinkTextBox.Text = $"https://docs.google.com/gview?url={pdfUrl}&embedded=true";
+                }
+                if (!string.IsNullOrEmpty(Refpath.Text))
+                {
+                    string refUrl = await UploadFileToGitHub(repoName, Refpath.Text);
+                    RefLinkTextBox.Text = $"https://docs.google.com/gview?url={refUrl}&embedded=true";
+                }
+                if (!string.IsNullOrEmpty(Imagepath.Text))
+                {
+                    string imgUrl = await UploadFileToGitHub(repoName, Imagepath.Text);
+                    ImageLinksTextBox.Text = imgUrl;
+                }
+                if (!string.IsNullOrEmpty(Image2path.Text))
+                {
+                    string imgUrl2 = await UploadFileToGitHub(repoName, Image2path.Text);
+                    ImageLinksTextBox.Text += $", {imgUrl2}";
+                }
+                status1.Text = "Genarating Accessible...";
+
+                var updatedJson = GenerateJsonFromInput();
+                await UploadJsonToRepo(repoName, "db.json", updatedJson);
+                status1.Text = "Material Uploading to DB...";
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+
+                MessageBox.Show("Material details updated successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+                MessageBox.Show($"Error saving updates: {ex.Message}");
+            }
+        }
+
+        private async Task<JObject> FetchJsonFromRepo(string repoName)
+        {
+            using (HttpClient client = new HttpClient())
+            {
+                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {PersonalAccessToken}");
+                client.DefaultRequestHeaders.Add("User-Agent", "RepoEditorApp");
+
+                string repoApiUrl = $"https://api.github.com/repos/{GitHubUsername}/{repoName}/contents/db.json";
+                var response = await client.GetAsync(repoApiUrl);
+
+                if (!response.IsSuccessStatusCode)
+                    throw new Exception("Failed to fetch JSON data.");
+
+                var jsonResponse = JObject.Parse(await response.Content.ReadAsStringAsync());
+                string decodedContent = Encoding.UTF8.GetString(Convert.FromBase64String(jsonResponse["content"].ToString()));
+                return JObject.Parse(decodedContent);
+            }
+        }
+
+        private void PopulateFields(JObject jsonData)
+        {
+            var material = jsonData["inventory"]?.FirstOrDefault();
+            if (material == null) return;
+
+            MaterialNameTextBox.Text = material["MaterialTitle"]["Name"]?.ToString();
+            PartNumberTextBox.Text = material["MaterialTitle"]["PN"]?.ToString();
+            ManufacturerTextBox.Text = material["MaterialTitle"]["MF"]?.ToString();
+            DescriptionTextBox.Text = material["MD"]?.ToString();
+            MaterialTypeTextBox.Text = material["MT"]?.ToString();
+            QuantityTextBox.Text = material["MQNT"]?.ToString();
+            TagTextBox.Text = material["MQATG"]?.ToString();
+            LocationTextBox.Text = material["ML"]?.ToString();
+            DatasheetLinkTextBox.Text = material["MDS"]?.ToString();
+            RefLinkTextBox.Text = material["MR"]?.ToString();
+            ImageLinksTextBox.Text = string.Join(", ", material["MaterialImages"].Select(x => x.ToString()));
+        }
+
+        private JObject GenerateJsonFromInput()
+        {
+            var imageLinks = ImageLinksTextBox.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                                   .Select(link => link.Trim());
+
+            return new JObject(
+                new JProperty("inventory", new JArray(
+                    new JObject(
+                        new JProperty("MaterialTitle", new JObject(
+                            new JProperty("Name", MaterialNameTextBox.Text),
+                            new JProperty("PN", PartNumberTextBox.Text),
+                            new JProperty("MF", ManufacturerTextBox.Text)
+                        )),
+                        new JProperty("MID", MIDTextBox.Text),
+                        new JProperty("MD", DescriptionTextBox.Text),
+                        new JProperty("MT", MaterialTypeTextBox.Text),
+                        new JProperty("MQNT", int.TryParse(QuantityTextBox.Text, out var quantity) ? quantity : 0),
+                        new JProperty("MQATG", TagTextBox.Text),
+                        new JProperty("ML", LocationTextBox.Text),
+                        new JProperty("MDS", DatasheetLinkTextBox.Text),
+                        new JProperty("MR", RefLinkTextBox.Text),
+                        new JProperty("MaterialImages", new JArray(imageLinks))
+                    )
+                ))
+            );
+        }
+
+        private async Task UploadJsonToRepo(string repoName, string filePath, JObject jsonData)
+        {
+            using (HttpClient client = new HttpClient())
+            {
+                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {PersonalAccessToken}");
+                client.DefaultRequestHeaders.Add("User-Agent", "RepoEditorApp");
+
+                string repoApiUrl = $"https://api.github.com/repos/{GitHubUsername}/{repoName}/contents/{filePath}";
+
+                // Fetch current file SHA (GitHub requires SHA for updates)
+                var shaResponse = await client.GetAsync(repoApiUrl);
+                string shaResponseBody = await shaResponse.Content.ReadAsStringAsync();
+                Console.WriteLine($"SHA API Response: {shaResponseBody}");
+
+                if (!shaResponse.IsSuccessStatusCode)
+                {
+                    throw new Exception("Failed to fetch existing file SHA. Make sure the file exists.");
+                }
+
+                var shaJson = JObject.Parse(shaResponseBody);
+                string fileSha = shaJson["sha"].ToString();
+
+                // Prepare content data
+                var contentData = new
+                {
+                    message = "Updating JSON data",
+                    content = Convert.ToBase64String(Encoding.UTF8.GetBytes(jsonData.ToString())),
+                    sha = fileSha // Required for updating an existing file
+                };
+
+                var content = new StringContent(Newtonsoft.Json.JsonConvert.SerializeObject(contentData), Encoding.UTF8, "application/json");
+                Console.WriteLine($"Uploading JSON to: {repoApiUrl}");
+                Console.WriteLine($"Payload: {Newtonsoft.Json.JsonConvert.SerializeObject(contentData)}");
+
+                var response = await client.PutAsync(repoApiUrl, content);
+                string responseBody = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"API Response: {responseBody}");
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new Exception($"Failed to update JSON file: {responseBody}");
+                }
+
+                Console.WriteLine($"JSON file updated successfully in {repoName}.");
+            }
+        }
+
+    }
+}
